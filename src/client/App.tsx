@@ -138,7 +138,7 @@ function Workspace(props: { agentName: string; token: string; config: Config | n
         {isPlayground ? (
           <PlaygroundForm call={call} onStarted={onSelect} />
         ) : (
-          <RepoPanel call={call} state={state} config={props.config} onStarted={onSelect} />
+          <RepoPanel state={state} config={props.config} />
         )}
         <ReviewList reviews={state?.reviews ?? []} selected={reviewId} onSelect={onSelect} loading={!state} error={connError} />
       </aside>
@@ -209,49 +209,12 @@ function PlaygroundForm({ call, onStarted }: { call: Call; onStarted: (id: strin
   );
 }
 
-function RepoPanel({ call, state, config, onStarted }: { call: Call; state: RepoState | null; config: Config | null; onStarted: (id: string) => void }) {
-  const [pr, setPr] = useState("");
-  const [notes, setNotes] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [saved, setSaved] = useState(false);
-
-  const run = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const n = Number(pr.replace(/.*\/pull\//, "").replace(/\D/g, ""));
-      const { reviewId } = await call<{ reviewId: string }>("reviewPullRequest", [n, location.origin, true]);
-      onStarted(reviewId);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const saveNotes = async () => {
-    await call("setNotes", [notes ?? ""]);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 1500);
-  };
-
+function RepoPanel({ state, config }: { state: RepoState | null; config: Config | null }) {
   return (
     <div className="panel">
       <h3>{state?.repo ?? "…"}</h3>
       {config && !config.githubConfigured && <div className="warn small">GitHub credentials aren't configured on this deployment, so PR reviews can't run.</div>}
-      <p className="muted small">Reviews start automatically when a PR is opened or marked ready for review. You can also run one by hand:</p>
-      <form className="row" onSubmit={(e) => { e.preventDefault(); run(); }}>
-        <input value={pr} onChange={(e) => setPr(e.target.value)} placeholder="PR # or URL" aria-label="Pull request" />
-        <button className="primary" disabled={busy || !/\d/.test(pr)}>{busy ? "…" : "Review"}</button>
-      </form>
-      {error && <div className="error">{error}</div>}
-      <details className="notes">
-        <summary>Team conventions ({state?.dismissedCount ?? 0} dismissed findings remembered)</summary>
-        <p className="muted small">Added to every review prompt for this repo, e.g. "Money is always integer cents", "scripts/ is internal tooling, ignore blocking I/O there".</p>
-        <textarea rows={5} value={notes ?? state?.notes ?? ""} onChange={(e) => setNotes(e.target.value)} aria-label="Team conventions" />
-        <button onClick={saveNotes}>{saved ? "Saved ✓" : "Save conventions"}</button>
-      </details>
+      <p className="muted small">Every non-draft pull request in this repository is reviewed automatically. Pick a review below to see its findings and ask about them.</p>
     </div>
   );
 }
@@ -483,7 +446,11 @@ function Chat({ reviewId, call, initial, findings }: { reviewId: string; call: C
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
-  useEffect(() => endRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }), [messages, busy]);
+  useEffect(() => {
+    // Braces matter: newer browsers return a Promise from scrollIntoView, and React
+    // would treat a returned value as the effect cleanup and crash calling it.
+    endRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [messages, busy]);
 
   const send = useCallback(async (q: string) => {
     if (!q.trim() || busy) return;

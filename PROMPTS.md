@@ -65,6 +65,14 @@ This project was built with AI assistance (Claude Code). As the assignment requi
 
 *Outcome:* the summary no longer shows a ✅ "no new issues found" while earlier findings are still open; it says how many are still open. Audited the repo against the assignment requirements before submission.
 
+### Prompt 17: UI cleanup and README
+
+> ok UI doesn't fully work on https://cf-ai-code-review.bartosz-matyjaszczyk.workers.dev/  when I click on the History, everything dissapear. Review the UI and leave only what's needed. currently there is too much going on,  like team conventions, or sending questions? nothing works. either fix it or hide it
+
+> afet that, create me a short, descriptive Readme. add what we did, what we did not, and that this is just to show the process rather than be a perfect tool
+
+*Outcome:* reproduced it in headless Chromium. The chat's auto-scroll effect returned the Promise that newer browsers return from `scrollIntoView`, React treated that as the effect's cleanup and crashed, and the whole page went blank. Fixed, plus an error boundary so a crash shows a message instead of a blank page. Removed "team conventions" and the manual PR re-run form from the UI. Verified the playground review, History switching and chat (playground and repo) in the browser against production. Rewrote the README to be short: what it does, what was done, what wasn't, and that it's an MVP that shows the process.
+
 <!-- Add later prompts below as the project evolves. -->
 
 ## 2. Runtime prompts (used by the app)
