@@ -55,6 +55,16 @@ This project was built with AI assistance (Claude Code). As the assignment requi
 
 *Outcome:* the push was reviewed incrementally (only the changed file, about 35 s), but all 15 findings were posted again inline. Cause: reviews saved before the `line_key` column existed had empty keys, so the "already commented" memory was empty. Fix: on startup the agent backfills missing line keys from the line-numbered diff stored with each review. Added a unit test for that.
 
+### Prompt 16: wording and submission check
+
+> added, check now
+
+*Outcome:* the next push was reviewed with no repeated comments ("16 finding(s) on lines already commented on are not repeated"), so the fix was confirmed in production.
+
+> ok. change this and tell me if all AC are met, to have our MVP. and if we are ready to submit https://github.com/bmatyjaszczyk/cf_ai_code_review as the repo with the solution for Cloudflare job
+
+*Outcome:* the summary no longer shows a ✅ "no new issues found" while earlier findings are still open; it says how many are still open. Audited the repo against the assignment requirements before submission.
+
 <!-- Add later prompts below as the project evolves. -->
 
 ## 2. Runtime prompts (used by the app)

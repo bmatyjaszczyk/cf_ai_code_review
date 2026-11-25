@@ -225,7 +225,8 @@ describe("merge", () => {
     const body = summaryBody({ findings: [], inlineIds: new Set(), repeated: 0, carried: 4, incrementalBase: "5728563abc", suppressed: 0, filesReviewed: 1, skipped: [], headSha: "f5bd10cdef", dashboardUrl: null });
     expect(body).toContain("changed since `5728563`");
     expect(body).toContain("no new issues");
-    expect(body).toContain("4 earlier finding(s)");
+    expect(body).toContain("4 earlier finding(s) are still open");
+    expect(body).not.toContain("✅");
   });
 
   it("renders a summary with a table and notes", () => {
