@@ -1,0 +1,27 @@
+{
+  "name": "cf-ai-code-review",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "deploy": "vite build && wrangler deploy",
+    "typecheck": "wrangler types && tsc -p tsconfig.worker.json && tsc -p tsconfig.client.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "agents": "^0.34.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.70.1",
+    "@types/react": "^19.3.2",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.2",
+    "wrangler": "^4.168.0"
+  }
+}

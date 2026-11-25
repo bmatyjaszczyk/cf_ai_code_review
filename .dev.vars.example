@@ -1,0 +1,10 @@
+# Copy to .dev.vars for local development (never commit .dev.vars).
+# Option A: GitHub App (recommended: comments come from "<app-name>[bot]")
+GITHUB_APP_ID=123456
+GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
+# Option B: fine-grained personal access token instead of an app
+# GITHUB_TOKEN=github_pat_...
+GITHUB_WEBHOOK_SECRET=some-long-random-string
+# Optional
+# DASHBOARD_TOKEN=another-random-string
+# DEFAULT_REPO=your-name/your-repo
