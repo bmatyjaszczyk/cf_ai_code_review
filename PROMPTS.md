@@ -49,6 +49,12 @@ This project was built with AI assistance (Claude Code). As the assignment requi
 
 *Outcome:* `line_key` column (schema migration on startup), incremental review via the compare API with findings carried over for untouched files, title rules in the prompt, more off-topic filters, and README links to the live app, demo repo and example PR.
 
+### Prompt 15: verifying incremental review in production
+
+> pushed a new commit. check
+
+*Outcome:* the push was reviewed incrementally (only the changed file, about 35 s), but all 15 findings were posted again inline. Cause: reviews saved before the `line_key` column existed had empty keys, so the "already commented" memory was empty. Fix: on startup the agent backfills missing line keys from the line-numbered diff stored with each review. Added a unit test for that.
+
 <!-- Add later prompts below as the project evolves. -->
 
 ## 2. Runtime prompts (used by the app)

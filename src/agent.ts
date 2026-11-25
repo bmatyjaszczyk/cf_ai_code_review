@@ -6,6 +6,7 @@
 import { Agent, callable } from "agents";
 import { getPullRequest, getRepoToken, githubConfigured } from "./github";
 import { chatAboutReview, PASSES } from "./llm";
+import { lineKey, linesFromContext } from "./merge";
 import {
   emptyCounts,
   type ChatMessage,
@@ -64,6 +65,7 @@ export class RepoAgent extends Agent<Env, RepoState> {
     // v2: line_key ("already commented on this line"). Added in place so existing data keeps working.
     const cols = this.sql<{ name: string }>`PRAGMA table_info(findings)`.map((c) => c.name);
     if (!cols.includes("line_key")) this.sql`ALTER TABLE findings ADD COLUMN line_key TEXT`;
+    this.backfillLineKeys();
     this.sql`CREATE TABLE IF NOT EXISTS dismissals (
       fingerprint TEXT PRIMARY KEY, title TEXT NOT NULL, file TEXT NOT NULL,
       reason TEXT NOT NULL, created_at INTEGER NOT NULL)`;
@@ -74,6 +76,25 @@ export class RepoAgent extends Agent<Env, RepoState> {
 
     const gh = repoFromAgentName(this.name);
     if (!this.state.repo) this.setState({ ...this.state, repo: gh ? `${gh.owner}/${gh.repo}` : "playground" });
+  }
+
+  /**
+   * Findings saved before line keys existed have line_key NULL, so "already commented"
+   * memory would ignore them and the next push would repeat every comment. Rebuild
+   * the keys from the line-numbered context stored with each review.
+   */
+  private backfillLineKeys() {
+    const rows = this.sql<{ review_id: string; id: string; file: string; line_start: number; context: string }>`
+      SELECT f.review_id, f.id, f.file, f.line_start, r.context FROM findings f JOIN reviews r ON r.id = f.review_id
+      WHERE f.line_key IS NULL`;
+    const parsed = new Map<string, Map<string, Map<number, string>>>();
+    for (const row of rows) {
+      let lines = parsed.get(row.review_id);
+      if (!lines) parsed.set(row.review_id, (lines = linesFromContext(row.context)));
+      const text = lines.get(row.file)?.get(row.line_start) ?? "";
+      const key = lineKey(row.file, text, row.line_start);
+      this.sql`UPDATE findings SET line_key = ${key} WHERE review_id = ${row.review_id} AND id = ${row.id}`;
+    }
   }
 
   // ------------------------------------------------------------ state helpers

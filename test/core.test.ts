@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { chunkFiles, parsePatch, playgroundToFiles, renderFile, shouldSkip } from "../src/diff";
 import { PASSES, extractJson, validateFindings } from "../src/llm";
-import { fingerprint, lineKey, mergeFindings, summaryBody } from "../src/merge";
+import { fingerprint, lineKey, linesFromContext, mergeFindings, summaryBody } from "../src/merge";
 import { scanSecrets } from "../src/secrets";
 import { SAMPLES } from "../src/shared/samples";
 import { pemToPkcs8, parsePullRequestUrl } from "../src/github";
@@ -211,6 +211,14 @@ describe("merge", () => {
     expect(first.fingerprint).not.toBe(second.fingerprint);
     expect(first.lineKey).toBe(second.lineKey);
     expect(lineKey("a.py", "  x = 1", 3)).toBe(lineKey("a.py", "x   = 1", 99));
+  });
+
+  it("rebuilds the same lineKey from a stored review context (backfill)", () => {
+    const merged = mergeFindings([base], [file], { minConfidence: 0.5, dismissed: new Set() }).findings[0];
+    const lines = linesFromContext(renderFile(file) + "\n\n" + renderFile(file, []).replace("src/users.ts", "other.ts"));
+    const text = lines.get("src/users.ts")?.get(merged.lineStart) ?? "";
+    expect(text).toContain("SELECT");
+    expect(lineKey(merged.file, text, merged.lineStart)).toBe(merged.lineKey);
   });
 
   it("describes incremental reviews and carried-over findings", () => {

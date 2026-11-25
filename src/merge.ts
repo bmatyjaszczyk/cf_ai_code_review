@@ -33,7 +33,28 @@ export function lineKey(file: string, lineText: string, line: number): string {
   return hash(`${file}|${norm || line}`);
 }
 
-const SECRETISH = /secret|password|credential|api.?key|token|hardcoded|connection string/i;
+/**
+ * Read the new-file line text back out of a stored, line-numbered review context
+ * (the output of renderFile). Used to backfill line keys for reviews saved before
+ * line keys existed.
+ */
+export function linesFromContext(context: string): Map<string, Map<number, string>> {
+  const files = new Map<string, Map<number, string>>();
+  let current: Map<number, string> | undefined;
+  for (const raw of context.split("\n")) {
+    const header = /^=== FILE: (.+) \([^()]*\) ===$/.exec(raw);
+    if (header) {
+      current = files.get(header[1]) ?? new Map();
+      files.set(header[1], current);
+      continue;
+    }
+    const m = /^\s*L(\d+) [+ ] ?(.*)$/.exec(raw);
+    if (m && current) current.set(Number(m[1]), m[2]);
+  }
+  return files;
+}
+
+const SECRETISH =/secret|password|credential|api.?key|token|hardcoded|connection string/i;
 
 function overlaps(a: RawFinding, b: RawFinding): boolean {
   return a.file === b.file && a.lineStart <= b.lineEnd + 2 && b.lineStart <= a.lineEnd + 2;
