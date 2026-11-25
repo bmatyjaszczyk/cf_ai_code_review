@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { chunkFiles, parsePatch, playgroundToFiles, renderFile, shouldSkip } from "../src/diff";
 import { PASSES, extractJson, validateFindings } from "../src/llm";
-import { fingerprint, mergeFindings, summaryBody } from "../src/merge";
+import { fingerprint, lineKey, mergeFindings, summaryBody } from "../src/merge";
 import { scanSecrets } from "../src/secrets";
 import { SAMPLES } from "../src/shared/samples";
 import { pemToPkcs8, parsePullRequestUrl } from "../src/github";
@@ -203,6 +203,21 @@ describe("merge", () => {
     expect(suppressed).toBe(0);
     expect(again.findings).toHaveLength(0);
     expect(again.suppressed).toBe(1);
+  });
+
+  it("gives the same lineKey to a relabeled finding on the same line", () => {
+    const first = mergeFindings([{ ...base, category: "security", title: "Insecure configuration" }], [file], { minConfidence: 0.5, dismissed: new Set() }).findings[0];
+    const second = mergeFindings([{ ...base, category: "configuration", title: "Debug mode enabled", source: "security" }], [file], { minConfidence: 0.5, dismissed: new Set() }).findings[0];
+    expect(first.fingerprint).not.toBe(second.fingerprint);
+    expect(first.lineKey).toBe(second.lineKey);
+    expect(lineKey("a.py", "  x = 1", 3)).toBe(lineKey("a.py", "x   = 1", 99));
+  });
+
+  it("describes incremental reviews and carried-over findings", () => {
+    const body = summaryBody({ findings: [], inlineIds: new Set(), repeated: 0, carried: 4, incrementalBase: "5728563abc", suppressed: 0, filesReviewed: 1, skipped: [], headSha: "f5bd10cdef", dashboardUrl: null });
+    expect(body).toContain("changed since `5728563`");
+    expect(body).toContain("no new issues");
+    expect(body).toContain("4 earlier finding(s)");
   });
 
   it("renders a summary with a table and notes", () => {

@@ -35,6 +35,20 @@ This project was built with AI assistance (Claude Code). As the assignment requi
 
 *Outcome:* ran real reviews against Workers AI with `scripts/smoke.ts`. The first run showed Llama re-reporting SQL injection in every pass, and a dedupe bug that merged three different secrets on adjacent lines. Fixed with per-pass "not in scope" lists, an off-topic filter, a short "analysis" field before the findings (better recall: the race condition, N+1 and money-math issues were then caught), a stricter error-handling rule and title-similarity dedupe. Webhook signature and draft filtering were tested with signed `curl` requests.
 
+### Prompts 5–13: GitHub App setup and first production run
+
+> *(short exchanges while setting up the GitHub App)*: "github recommends using github apps instead of fine-grained token. i connected Cloudflare to my account. check the connection and if we can use it to this case insteadl of token" · "ok. push and deploy and give me webhook url. i filled the rest already so i jus need the url" · "try it now" · "i don't see Generate a private key. looks like i need to do it other way" · "ok done. it was in different place but secret is put now. try it again." · "done." · "PR is open. check now" · "Got 405 on the recent deliveries. i double checked the secret and looks fine. can you verify?" · "delivery is OK now. added new commit. check"
+
+*Outcome:* explained that the Cloudflare GitHub integration (Workers Builds) can't post comments for us, so a separate GitHub App is needed. Deployed, found the missing private-key secret, and traced the 405 to a webhook URL without the `/webhook/github` path. The first automatic reviews worked end to end.
+
+### Prompt 14: less noise on push
+
+> yes *(to: per-line "already commented" memory, incremental review on push, better titles and scope filters)*
+
+> also add in the readme link to the demo repo, so Cloudflare can see the result of it.
+
+*Outcome:* `line_key` column (schema migration on startup), incremental review via the compare API with findings carried over for untouched files, title rules in the prompt, more off-topic filters, and README links to the live app, demo repo and example PR.
+
 <!-- Add later prompts below as the project evolves. -->
 
 ## 2. Runtime prompts (used by the app)

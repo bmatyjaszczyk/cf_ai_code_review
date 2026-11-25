@@ -61,6 +61,9 @@ export class RepoAgent extends Agent<Env, RepoState> {
       source TEXT NOT NULL, inline INTEGER NOT NULL DEFAULT 0, posted INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (review_id, id))`;
     this.sql`CREATE INDEX IF NOT EXISTS findings_fp ON findings (fingerprint)`;
+    // v2: line_key ("already commented on this line"). Added in place so existing data keeps working.
+    const cols = this.sql<{ name: string }>`PRAGMA table_info(findings)`.map((c) => c.name);
+    if (!cols.includes("line_key")) this.sql`ALTER TABLE findings ADD COLUMN line_key TEXT`;
     this.sql`CREATE TABLE IF NOT EXISTS dismissals (
       fingerprint TEXT PRIMARY KEY, title TEXT NOT NULL, file TEXT NOT NULL,
       reason TEXT NOT NULL, created_at INTEGER NOT NULL)`;
@@ -131,6 +134,8 @@ export class RepoAgent extends Agent<Env, RepoState> {
     installationId?: number | null;
     baseUrl: string;
     force?: boolean;
+    /** Push to an open PR: only re-review files changed since the last review. */
+    incremental?: boolean;
   }): Promise<{ reviewId: string; duplicate: boolean }> {
     const gh = repoFromAgentName(this.name);
     if (!gh) throw new Error("This agent is not bound to a GitHub repository");
@@ -157,7 +162,7 @@ export class RepoAgent extends Agent<Env, RepoState> {
       agentName: this.name,
       reviewId,
       baseUrl: args.baseUrl,
-      github: { owner: gh.owner, repo: gh.repo, number: args.number, headSha, installationId: args.installationId ?? null }
+      github: { owner: gh.owner, repo: gh.repo, number: args.number, headSha, installationId: args.installationId ?? null, incremental: args.incremental ?? false }
     };
     try {
       await this.env.REVIEW_WORKFLOW.create({ id: `${this.name}-${reviewId}`.slice(0, 100).replace(/[^a-zA-Z0-9_-]/g, "_"), params });
@@ -189,14 +194,21 @@ export class RepoAgent extends Agent<Env, RepoState> {
 
   // ---------------------------------------------- called by ReviewWorkflow (RPC)
 
-  getMemory(prNumber: number | null): { notes: string; dismissed: string[]; postedOnPr: string[] } {
+  getMemory(prNumber: number | null): {
+    notes: string;
+    dismissed: string[];
+    postedLineKeys: string[];
+    lastReviewedSha: string | null;
+    previousFindings: Finding[];
+  } {
     const dismissed = this.sql<{ fingerprint: string }>`SELECT fingerprint FROM dismissals`.map((r) => r.fingerprint);
-    const postedOnPr =
-      prNumber === null
-        ? []
-        : this.sql<{ fingerprint: string }>`SELECT DISTINCT f.fingerprint FROM findings f JOIN reviews r ON r.id = f.review_id
-            WHERE r.pr_number = ${prNumber} AND f.posted = 1`.map((r) => r.fingerprint);
-    return { notes: this.state.notes, dismissed, postedOnPr };
+    if (prNumber === null) return { notes: this.state.notes, dismissed, postedLineKeys: [], lastReviewedSha: null, previousFindings: [] };
+    const postedLineKeys = this.sql<{ line_key: string }>`SELECT DISTINCT f.line_key FROM findings f JOIN reviews r ON r.id = f.review_id
+      WHERE r.pr_number = ${prNumber} AND f.posted = 1 AND f.line_key IS NOT NULL`.map((r) => r.line_key);
+    const [last] = this.sql<{ id: string; head_sha: string }>`SELECT id, head_sha FROM reviews
+      WHERE pr_number = ${prNumber} AND status = 'done' AND head_sha IS NOT NULL ORDER BY finished_at DESC LIMIT 1`;
+    const previousFindings = last ? this.loadFindings(last.id).filter((f) => !f.dismissed) : [];
+    return { notes: this.state.notes, dismissed, postedLineKeys, lastReviewedSha: last?.head_sha ?? null, previousFindings };
   }
 
   markRunning(reviewId: string, info: { title?: string; prUrl?: string; chunks: number }) {
@@ -215,16 +227,17 @@ export class RepoAgent extends Agent<Env, RepoState> {
     this.refresh();
   }
 
-  completeReview(reviewId: string, result: { findings: Finding[]; postedFingerprints: string[]; context: string; skipped: string[] }) {
-    const posted = new Set(result.postedFingerprints);
+  completeReview(reviewId: string, result: { findings: Finding[]; postedLineKeys: string[]; context: string; skipped: string[] }) {
+    const posted = new Set(result.postedLineKeys);
     const counts = emptyCounts();
     this.ctx.storage.transactionSync(() => {
       this.sql`DELETE FROM findings WHERE review_id = ${reviewId}`;
       for (const f of result.findings) {
         counts[f.severity]++;
-        this.sql`INSERT INTO findings (id, review_id, fingerprint, file, line_start, line_end, category, severity, title, explanation, suggestion, confidence, source, inline, posted)
+        this.sql`INSERT INTO findings (id, review_id, fingerprint, file, line_start, line_end, category, severity, title, explanation, suggestion, confidence, source, inline, posted, line_key)
           VALUES (${f.id}, ${reviewId}, ${f.fingerprint}, ${f.file}, ${f.lineStart}, ${f.lineEnd}, ${f.category}, ${f.severity}, ${f.title},
-                  ${f.explanation}, ${f.suggestion}, ${f.confidence}, ${f.source}, ${f.inline ? 1 : 0}, ${posted.has(f.fingerprint) ? 1 : 0})`;
+                  ${f.explanation}, ${f.suggestion}, ${f.confidence}, ${f.source}, ${f.inline ? 1 : 0},
+                  ${f.lineKey && posted.has(f.lineKey) ? 1 : 0}, ${f.lineKey ?? null})`;
       }
       const [row] = this.sql<{ progress: string }>`SELECT progress FROM reviews WHERE id = ${reviewId}`;
       const progress = row ? (JSON.parse(row.progress) as PassProgress[]).map((p) => ({ ...p, done: p.total })) : [];
@@ -245,6 +258,15 @@ export class RepoAgent extends Agent<Env, RepoState> {
   getReview(reviewId: string): ReviewDetail | null {
     const [r] = this.sql<Row>`SELECT * FROM reviews WHERE id = ${reviewId}`;
     if (!r) return null;
+    const findings = this.loadFindings(reviewId);
+    const messages = this.sql<{ role: string; content: string; created_at: number }>`SELECT role, content, created_at FROM messages WHERE review_id = ${reviewId} ORDER BY id`.map(
+      (m): ChatMessage => ({ role: m.role as ChatMessage["role"], content: m.content, createdAt: m.created_at })
+    );
+    return { review: this.toSummary(r), findings, messages, context: String(r.context ?? "") };
+  }
+
+  /** Findings of one review, most severe first, with the repo's current dismissals applied. */
+  private loadFindings(reviewId: string): Finding[] {
     const dismissed = new Set(this.sql<{ fingerprint: string }>`SELECT fingerprint FROM dismissals`.map((d) => d.fingerprint));
     const findings = this.sql<Row>`SELECT * FROM findings WHERE review_id = ${reviewId}`.map(
       (f): Finding => ({
@@ -259,6 +281,7 @@ export class RepoAgent extends Agent<Env, RepoState> {
         suggestion: String(f.suggestion),
         confidence: Number(f.confidence),
         fingerprint: String(f.fingerprint),
+        lineKey: f.line_key ? String(f.line_key) : undefined,
         source: String(f.source),
         inline: Boolean(f.inline),
         dismissed: dismissed.has(String(f.fingerprint))
@@ -266,10 +289,7 @@ export class RepoAgent extends Agent<Env, RepoState> {
     );
     const order: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3 };
     findings.sort((a, b) => order[a.severity] - order[b.severity] || b.confidence - a.confidence);
-    const messages = this.sql<{ role: string; content: string; created_at: number }>`SELECT role, content, created_at FROM messages WHERE review_id = ${reviewId} ORDER BY id`.map(
-      (m): ChatMessage => ({ role: m.role as ChatMessage["role"], content: m.content, createdAt: m.created_at })
-    );
-    return { review: this.toSummary(r), findings, messages, context: String(r.context ?? "") };
+    return findings;
   }
 
   @callable({ description: "Ask a follow-up question about a review" })

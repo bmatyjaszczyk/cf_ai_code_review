@@ -4,8 +4,14 @@ An AI code reviewer that runs entirely on Cloudflare. When a **non-draft pull re
 
 There's also a zero-setup **Playground**: paste a file or a `git diff`, or load one of the deliberately vulnerable samples, and get the same review in the browser.
 
-> **Live demo:** `https://cf-ai-code-review.<your-subdomain>.workers.dev` *(fill in after `npm run deploy`)*
-> **Example PR reviewed by the bot:** *(link a PR in a demo repo here)*
+## See it in action
+
+- **Live app:** https://cf-ai-code-review.bartosz-matyjaszczyk.workers.dev. Open the Playground, click **Load sample**, then **Run review** (no setup needed).
+- **Demo repository:** https://github.com/bmatyjaszczyk/cf_ai_code_review-demo. The GitHub App `cf-ai-code-review-bot` is installed there.
+- **Example PR reviewed automatically:** https://github.com/bmatyjaszczyk/cf_ai_code_review-demo/pull/1. Look at the bot's inline comments, the summary table and the red "AI code review" status check. Later pushes to the PR were reviewed incrementally.
+- **Dashboard for the demo repo:** https://cf-ai-code-review.bartosz-matyjaszczyk.workers.dev/?agent=bmatyjaszczyk--cf_ai_code_review-demo (review history, live progress, findings, chat)
+
+Want to see it react live? Open a non-draft PR against the demo repo. The bot reviews it within about a minute.
 
 ## What it catches
 
@@ -46,7 +52,8 @@ flowchart LR
 - **Focused passes rather than one big prompt.** Llama 3.3 does much better with a short checklist per call. Four passes run in parallel as separate workflow steps, so a failure in one is retried without redoing the others.
 - **Secrets are found deterministically.** Regexes and an entropy check are more reliable than an LLM for this. LLM findings about the same line are deduplicated against the scanner.
 - **The model cites real lines.** The diff is rendered with new-file line numbers (`L42 + code`), and the model is told to report only on added lines. Every cited line is checked against the diff: near-misses are moved to the nearest changed line, and invented lines are dropped. That's what makes inline comments reliable.
-- **Stable fingerprints.** A finding's identity is `file + category + content of the cited line`, not the line number and not the model's wording. This is why "dismiss" and "don't repeat comments" keep working when code moves or the model phrases the issue differently.
+- **Stable fingerprints.** A finding's identity is `file + category + content of the cited line`, not the line number and not the model's wording, so dismissals survive code moving around. To avoid repeating comments, an even looser key is used (`file + line content`). Llama doesn't always give the same issue the same category, and a line the bot has already commented on shouldn't get a second comment after a push.
+- **Incremental reviews on push.** On `synchronize`, the GitHub compare API finds the files changed since the last reviewed commit. Only those are sent to the LLM. Findings in untouched files are carried over, so the status check still reflects every open issue. After a force-push the comparison fails, and it falls back to a full review.
 - **Bounded cost.** Lockfiles, vendored, generated and binary files are skipped. The diff is packed into chunks of ~9k tokens (24k context window), and there are at most 4 chunks per review, so at most 16 LLM calls. Anything not reviewed is listed in the summary.
 - **Untrusted model output.** The model reads attacker-controllable code, so its output is never rendered as HTML: the dashboard has its own small markdown-to-React renderer.
 
@@ -101,7 +108,7 @@ npm run deploy
 | Var | Default | Meaning |
 |---|---|---|
 | `MODEL` | `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | Workers AI model |
-| `REVIEW_ON_PUSH` | `true` | Also review new commits pushed to an open PR (findings already commented on aren't repeated) |
+| `REVIEW_ON_PUSH` | `true` | Also review new commits pushed to an open PR. Only files changed since the last review are re-reviewed, findings in untouched files are carried over, and lines already commented on aren't commented again |
 | `MAX_INLINE_COMMENTS` | `20` | Maximum inline comments per review; the rest go into the summary |
 | `MIN_CONFIDENCE` | `0.5` | Drop findings below this model confidence (critical ones are always kept) |
 

@@ -137,6 +137,22 @@ export async function listPullFiles(token: string, owner: string, repo: string, 
   return files.slice(0, max);
 }
 
+/**
+ * Files changed between two commits, or null if they can't be compared (force-push
+ * rewrote history, or the base commit is gone). The caller then falls back to a
+ * full review.
+ */
+export async function changedFilesBetween(token: string, owner: string, repo: string, base: string, head: string): Promise<string[] | null> {
+  try {
+    const cmp = await gh<{ status: string; files?: { filename: string }[] }>(token, "GET", `/repos/${owner}/${repo}/compare/${base}...${head}`);
+    if (cmp.status !== "ahead" && cmp.status !== "identical") return null;
+    return (cmp.files ?? []).map((f) => f.filename);
+  } catch (e) {
+    if (e instanceof GitHubError && (e.status === 404 || e.status === 422)) return null;
+    throw e;
+  }
+}
+
 export interface ReviewComment {
   path: string;
   line: number;

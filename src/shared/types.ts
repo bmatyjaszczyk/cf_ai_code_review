@@ -35,6 +35,12 @@ export interface Finding {
   confidence: number;
   /** Stable identity across pushes, used for dedupe and "dismiss" memory. */
   fingerprint: string;
+  /**
+   * Identity of the commented line (file + line content, no category). Used to avoid
+   * commenting on the same line again after a push, even when the model labels the
+   * issue differently this time.
+   */
+  lineKey?: string;
   /** Which analysis pass produced it ("secret-scan" for the deterministic scanner). */
   source: string;
   /** True when it was posted as an inline PR comment (line is inside the diff). */

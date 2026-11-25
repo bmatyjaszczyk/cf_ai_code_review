@@ -28,7 +28,12 @@ export function fingerprint(f: Pick<Finding, "file" | "category" | "lineStart">,
   return hash(`${f.file}|${f.category}|${norm || f.lineStart}`);
 }
 
-const SECRETISH = /secret|password|credential|api.?key|token|hardcoded/i;
+export function lineKey(file: string, lineText: string, line: number): string {
+  const norm = lineText.replace(/\s+/g, " ").trim().toLowerCase();
+  return hash(`${file}|${norm || line}`);
+}
+
+const SECRETISH = /secret|password|credential|api.?key|token|hardcoded|connection string/i;
 
 function overlaps(a: RawFinding, b: RawFinding): boolean {
   return a.file === b.file && a.lineStart <= b.lineEnd + 2 && b.lineStart <= a.lineEnd + 2;
@@ -102,7 +107,7 @@ export function mergeFindings(raw: RawFinding[], files: ParsedFile[], opts: Merg
       suppressed++;
       continue;
     }
-    kept.push({ ...candidate, id: `${fp}-${kept.length}`, fingerprint: fp, inline });
+    kept.push({ ...candidate, id: `${fp}-${kept.length}`, fingerprint: fp, lineKey: lineKey(file.path, lineText(file, lineStart), lineStart), inline });
   }
 
   kept.sort((a, b) => rank(a) - rank(b));
@@ -137,6 +142,10 @@ export function summaryBody(args: {
   findings: Finding[];
   inlineIds: Set<string>;
   repeated: number;
+  /** Findings in files not touched since the last review, carried over from it. */
+  carried?: number;
+  /** Set when only files changed since this commit were re-reviewed. */
+  incrementalBase?: string | null;
   suppressed: number;
   filesReviewed: number;
   skipped: string[];
@@ -147,10 +156,13 @@ export function summaryBody(args: {
   const c = countBySeverity(findings);
   const lines: string[] = ["## 🤖 AI Code Review", ""];
   const total = findings.length;
+  const scope = args.incrementalBase
+    ? `${args.filesReviewed} file(s) changed since \`${args.incrementalBase.slice(0, 7)}\`, at \`${args.headSha.slice(0, 7)}\``
+    : `${args.filesReviewed} file(s) at \`${args.headSha.slice(0, 7)}\``;
   lines.push(
     total === 0
-      ? `✅ Reviewed ${args.filesReviewed} file(s) at \`${args.headSha.slice(0, 7)}\`: no issues found.`
-      : `Reviewed ${args.filesReviewed} file(s) at \`${args.headSha.slice(0, 7)}\`: **${total} finding(s)**: ` +
+      ? `✅ Reviewed ${scope}: no new issues found.`
+      : `Reviewed ${scope}: **${total} new finding(s)**: ` +
           (Object.keys(c) as Severity[]).filter((s) => c[s]).map((s) => `${ICON[s]} ${c[s]} ${s}`).join(" · ")
   );
 
@@ -169,7 +181,8 @@ export function summaryBody(args: {
   }
 
   const notes: string[] = [];
-  if (args.repeated) notes.push(`${args.repeated} finding(s) already commented on earlier commits are not repeated inline.`);
+  if (args.repeated) notes.push(`${args.repeated} finding(s) on lines already commented on are not repeated.`);
+  if (args.carried) notes.push(`${args.carried} earlier finding(s) in files untouched by this push are still open (see the dashboard).`);
   if (args.suppressed) notes.push(`${args.suppressed} finding(s) hidden because they were dismissed earlier in this repo.`);
   if (args.skipped.length) notes.push(`Not reviewed: ${args.skipped.slice(0, 10).map((s) => `\`${s}\``).join(", ")}${args.skipped.length > 10 ? ` and ${args.skipped.length - 10} more` : ""}.`);
   if (notes.length) lines.push("", ...notes.map((n) => `> ${n}`));

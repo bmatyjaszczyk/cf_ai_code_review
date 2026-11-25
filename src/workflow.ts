@@ -8,8 +8,8 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
 import { getAgentByName } from "agents";
-import { chunkFiles, parsePatch, playgroundToFiles, shouldSkip, type DiffFile } from "./diff";
-import { getPullRequest, getRepoToken, listPullFiles, postReview, setCommitStatus, type ReviewComment } from "./github";
+import { chunkFiles, parsePatch, playgroundToFiles, renderFile, shouldSkip, type DiffFile } from "./diff";
+import { changedFilesBetween, getPullRequest, getRepoToken, listPullFiles, postReview, setCommitStatus, type ReviewComment } from "./github";
 import { PASSES, runPass, type RawFinding } from "./llm";
 import { countBySeverity, inlineCommentBody, mergeFindings, summaryBody } from "./merge";
 import { scanSecrets } from "./secrets";
@@ -19,7 +19,7 @@ export interface ReviewParams {
   agentName: string;
   reviewId: string;
   baseUrl: string;
-  github?: { owner: string; repo: string; number: number; headSha: string; installationId: number | null };
+  github?: { owner: string; repo: string; number: number; headSha: string; installationId: number | null; incremental?: boolean };
   playground?: { filename: string; content: string };
 }
 
@@ -43,21 +43,42 @@ export class ReviewWorkflow extends WorkflowEntrypoint<Env, ReviewParams> {
         return { title: pr.title as string | null, prUrl: pr.html_url as string | null, files };
       });
 
+      const memory = await step.do("load memory", () => agent.getMemory(gh?.number ?? null));
+
+      // On a push to an open PR, review only files changed since the last reviewed
+      // commit. Findings in untouched files are carried over from that review.
+      let changedSinceLast: string[] | null = null;
+      if (gh?.incremental && memory.lastReviewedSha && memory.lastReviewedSha !== gh.headSha) {
+        const base = memory.lastReviewedSha;
+        changedSinceLast = await step.do("find files changed since last review", API_STEP, async () => {
+          const token = await getRepoToken(this.env, gh.owner, gh.repo, gh.installationId);
+          return changedFilesBetween(token, gh.owner, gh.repo, base, gh.headSha);
+        });
+      }
+      const changedSet = changedSinceLast ? new Set(changedSinceLast) : null;
+
       const skipped: string[] = [];
       const reviewable: DiffFile[] = [];
-      for (const f of loaded.files) (shouldSkip(f) ? skipped.push(f.path) : reviewable.push(f));
-      if (reviewable.length === 0 && loaded.files.length === 0) throw new NonRetryableError("The diff is empty: nothing to review");
+      for (const f of loaded.files) {
+        const reason = shouldSkip(f);
+        if (reason) skipped.push(f.path);
+        else reviewable.push(f);
+      }
+      if (loaded.files.length === 0) throw new NonRetryableError("The diff is empty: nothing to review");
 
       // Parsing and chunking are deterministic, so they don't need checkpoints:
       // replaying them after a restart gives the same result.
-      const parsed = reviewable.map(parsePatch);
+      const allParsed = reviewable.map(parsePatch);
+      const parsed = changedSet ? allParsed.filter((f) => changedSet.has(f.path)) : allParsed;
       const { chunks, skipped: overBudget } = chunkFiles(parsed);
       skipped.push(...overBudget.map((s) => `${s} (diff too large)`));
+      const carried = changedSet
+        ? memory.previousFindings.filter((f) => !changedSet.has(f.file) && allParsed.some((pf) => pf.path === f.file))
+        : [];
 
-      const memory = await step.do("load memory", async () => {
-        await agent.markRunning(p.reviewId, { title: loaded.title ?? undefined, prUrl: loaded.prUrl ?? undefined, chunks: chunks.length });
-        return agent.getMemory(gh?.number ?? null);
-      });
+      await step.do("mark running", () =>
+        agent.markRunning(p.reviewId, { title: loaded.title ?? undefined, prUrl: loaded.prUrl ?? undefined, chunks: chunks.length })
+      );
 
       // 2. Deterministic secret scan (no LLM).
       const secretFindings = await step.do("secret scan", async () => {
@@ -88,26 +109,39 @@ export class ReviewWorkflow extends WorkflowEntrypoint<Env, ReviewParams> {
 
       // 4. Merge: validate lines, dedupe across passes, apply memory, rank.
       const minConfidence = Number(this.env.MIN_CONFIDENCE ?? 0.5);
-      const { findings, suppressed } = mergeFindings([...secretFindings, ...passResults.flat()], parsed, {
+      const { findings: fresh, suppressed } = mergeFindings([...secretFindings, ...passResults.flat()], parsed, {
         minConfidence,
         dismissed: new Set(memory.dismissed)
       });
+      const findings = [...fresh, ...carried];
 
-      // 5. Post to GitHub as one PR review with inline comments and a summary.
-      let postedFingerprints: string[] = [];
+      // 5. Post to GitHub as one PR review with inline comments and a summary. Lines the
+      //    bot already commented on (same file + same line content) aren't commented again.
+      let postedLineKeys: string[] = memory.postedLineKeys;
       if (gh) {
-        postedFingerprints = await step.do("post review to GitHub", API_STEP, async () => {
-          const alreadyPosted = new Set(memory.postedOnPr);
-          const maxInline = Number(this.env.MAX_INLINE_COMMENTS ?? 20);
-          const inline = findings.filter((f) => f.inline && !alreadyPosted.has(f.fingerprint)).slice(0, maxInline);
-          const repeated = findings.filter((f) => alreadyPosted.has(f.fingerprint)).length;
-          const comments: ReviewComment[] = inline.map((f) => ({ path: f.file, line: f.lineStart, side: "RIGHT", body: inlineCommentBody(f, dashboardUrl) }));
-          const inlineIds = new Set(inline.map((f) => f.id));
+        postedLineKeys = await step.do("post review to GitHub", API_STEP, async () => {
           const token = await getRepoToken(this.env, gh.owner, gh.repo, gh.installationId);
+          const all = countBySeverity(findings);
+          const statusText = findings.length ? `${findings.length} open finding(s): ${all.critical} critical, ${all.high} high` : "No issues found";
+          const statusState = all.critical > 0 ? "failure" : "success";
+
+          if (changedSet && parsed.length === 0) {
+            // The push only touched docs, lockfiles or similar: nothing new to say.
+            await setCommitStatus(token, gh.owner, gh.repo, gh.headSha, statusState, `No new code to review · ${statusText}`, dashboardUrl);
+            return memory.postedLineKeys;
+          }
+
+          const alreadyPosted = new Set(memory.postedLineKeys);
+          const isNew = (f: Finding) => !f.lineKey || !alreadyPosted.has(f.lineKey);
+          const maxInline = Number(this.env.MAX_INLINE_COMMENTS ?? 20);
+          const inline = fresh.filter((f) => f.inline && isNew(f)).slice(0, maxInline);
+          const comments: ReviewComment[] = inline.map((f) => ({ path: f.file, line: f.lineStart, side: "RIGHT", body: inlineCommentBody(f, dashboardUrl) }));
           const body = summaryBody({
-            findings: findings.filter((f) => !alreadyPosted.has(f.fingerprint)),
-            inlineIds,
-            repeated,
+            findings: fresh.filter(isNew),
+            inlineIds: new Set(inline.map((f) => f.id)),
+            repeated: fresh.filter((f) => !isNew(f)).length,
+            carried: carried.length,
+            incrementalBase: changedSet ? memory.lastReviewedSha : null,
             suppressed,
             filesReviewed: parsed.length,
             skipped,
@@ -115,21 +149,18 @@ export class ReviewWorkflow extends WorkflowEntrypoint<Env, ReviewParams> {
             dashboardUrl
           });
           const res = await postReview(token, gh.owner, gh.repo, gh.number, { commitId: gh.headSha, body, comments });
-          const c = countBySeverity(findings);
-          await setCommitStatus(
-            token, gh.owner, gh.repo, gh.headSha,
-            c.critical > 0 ? "failure" : "success",
-            findings.length ? `${findings.length} finding(s): ${c.critical} critical, ${c.high} high` : "No issues found",
-            dashboardUrl
-          );
-          return [...memory.postedOnPr, ...(res.inlinePosted ? inline.map((f) => f.fingerprint) : [])];
+          await setCommitStatus(token, gh.owner, gh.repo, gh.headSha, statusState, statusText, dashboardUrl);
+          const newKeys = res.inlinePosted ? inline.map((f) => f.lineKey).filter((k): k is string => Boolean(k)) : [];
+          return [...memory.postedLineKeys, ...newKeys];
         });
       }
 
-      // 6. Save to the agent (memory + live dashboard update).
-      const context = chunks.map((c) => c.text).join("\n\n").slice(0, 200_000);
+      // 6. Save to the agent (memory + live dashboard update). The context covers all
+      //    PR files (not only re-reviewed ones), so carried-over findings show code too.
+      const context = allParsed.map((f) => renderFile(f)).join("\n\n").slice(0, 200_000);
+      const skippedNote = changedSet ? [...skipped, ...allParsed.filter((f) => !changedSet.has(f.path)).map((f) => `${f.path} (unchanged since ${memory.lastReviewedSha!.slice(0, 7)})`)] : skipped;
       await step.do("save results", () =>
-        agent.completeReview(p.reviewId, { findings: findings as Finding[], postedFingerprints, context, skipped })
+        agent.completeReview(p.reviewId, { findings: findings as Finding[], postedLineKeys, context, skipped: skippedNote })
       );
       return { findings: findings.length, suppressed };
     } catch (e) {

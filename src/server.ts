@@ -53,7 +53,8 @@ async function handleWebhook(request: Request, env: Env): Promise<Response> {
     title: pr.title,
     prUrl: pr.html_url,
     installationId: payload.installation?.id ?? null,
-    baseUrl: new URL(request.url).origin
+    baseUrl: new URL(request.url).origin,
+    incremental: payload.action === "synchronize"
   });
   return json({ queued: !result.duplicate, ...result }, 202);
 }

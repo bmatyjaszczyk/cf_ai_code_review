@@ -15,8 +15,8 @@ export interface Pass {
   offTopic: RegExp;
 }
 
-const SECURITY_TOPICS = /injection|\bxss\b|cross[- ]site|\beval\b|code execution|traversal|\bssrf\b|secret|credential|api key|hardcoded|\bcors\b|\btls\b|certificate|https agent|csrf|deseriali[sz]|unseriali[sz]|pickl|yaml\.load/i;
-const PERF_TOPICS = /\bn\+1\b|blocking|readfilesync|missing index|unbounded quer/i;
+const SECURITY_TOPICS = /injection|\bxss\b|cross[- ]site|\beval\b|code execution|traversal|\bssrf\b|secret|credential|api key|hardcoded|\bcors\b|\btls\b|certificate|https agent|csrf|deseriali[sz]|unseriali[sz]|pickl|yaml\.load|shell ?= ?true|os\.system|insecure config|debug mode/i;
+const PERF_TOPICS = /\bn\+1\b|blocking|readfilesync|missing index|unbounded quer|connection pool/i;
 const RELIABILITY_TOPICS = /floating[- ]point|float(ing)? arithmetic|rounding|empty catch|swallow/i;
 
 /**
@@ -59,7 +59,7 @@ export const PASSES: Pass[] = [
     label: "Database & I/O performance",
     categories: ["database-performance", "blocking-io"],
     notInScope: "ANY security issue (SQL injection is NOT a performance problem; neither are eval, XSS, secrets, CORS, TLS), logic bugs, race conditions, money math, error handling",
-    offTopic: new RegExp(`${SECURITY_TOPICS.source}|${RELIABILITY_TOPICS.source}|race condition`, "i"),
+    offTopic: new RegExp(`${SECURITY_TOPICS.source}|${RELIABILITY_TOPICS.source}|race condition|concurren|thread[- ]safe`, "i"),
     checklist: `
 - N+1 queries: a query or ORM lazy-load inside a loop over results (for user in users: user.orders...), await db.query inside for/map.
 - Missing indexes: new queries or migrations filtering, joining or sorting on columns with no index; foreign keys without an index; LIKE '%x' scans.
@@ -72,7 +72,7 @@ export const PASSES: Pass[] = [
     label: "Money math, error handling & quality",
     categories: ["financial-precision", "error-handling", "code-quality"],
     notInScope: "ANY security issue (SQL/code injection, eval, XSS, path traversal, secrets, CORS, TLS: an injection is not an error-handling problem), performance, N+1 queries, blocking I/O, race conditions",
-    offTopic: new RegExp(`${SECURITY_TOPICS.source}|${PERF_TOPICS.source}|race condition`, "i"),
+    offTopic: new RegExp(`${SECURITY_TOPICS.source}|${PERF_TOPICS.source}|race condition|concurren|thread[- ]safe|\\bsleep\\b`, "i"),
     checklist: `
 - Financial precision: money stored or computed as float/double/JS number (price * qty, balances, tax, currency conversion), toFixed/Math.round used for monetary rounding, comparing floats with ==, summing floats in loops. Recommend integer minor units (cents), Decimal/BigDecimal, or a money library, with an explicit rounding mode.
 - Error handling: empty catch blocks, errors that are swallowed or only logged on a critical path, stack traces or internal errors returned to clients, resources not closed (missing finally/using/with/defer), retries without backoff, error messages without useful context.
@@ -101,10 +101,11 @@ Rules:
 1. Report only problems on "+" lines, i.e. code introduced or changed by this PR. Use context lines only to understand it.
 2. "line_start" and "line_end" must be L-numbers that appear on "+" lines of the cited file. "file" must be the exact path from the "=== FILE:" header.
 3. Every finding must be specific and real: say what breaks, how it can be triggered, and its impact. No generic advice, no style or formatting nits, no speculation about code you cannot see.
-4. "suggestion" is a concrete fix, ideally a short corrected code snippet in a markdown code block.
-5. First write "analysis": go through the checklist item by item and note which items appear in the diff, with line numbers (short, max ~8 lines). Then turn each real issue into a finding.
-6. If nothing in scope is wrong, return an empty "findings" array. An empty result is better than a weak finding.
-7. At most 8 findings, most important first. "confidence" is between 0 and 1.
+4. "title" is specific: name the function, route or variable AND the problem in at most ~10 words, e.g. "SQL injection via email in GET /users" or "Wallet balance race in /checkout". Never generic titles like "Insecure configuration" or "Sleep function".
+5. "suggestion" is a concrete fix, ideally a short corrected code snippet in a markdown code block.
+6. First write "analysis": go through the checklist item by item and note which items appear in the diff, with line numbers (short, max ~8 lines). Then turn each real issue into a finding.
+7. If nothing in scope is wrong, return an empty "findings" array. An empty result is better than a weak finding.
+8. At most 8 findings, most important first. "confidence" is between 0 and 1.
 
 ${SEVERITY_RUBRIC}${notes.trim() ? `\n\nTeam conventions and notes from the repository owner (respect these, and don't flag what they say is intentional):\n${notes.trim()}` : ""}
 
